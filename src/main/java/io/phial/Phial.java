@@ -1,7 +1,8 @@
 package io.phial;
 
-import io.phial.specs.RecordTableSpec;
+import io.phial.specs.EntityTableSpec;
 
+import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -12,6 +13,14 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 public class Phial {
+    public static final String[] EMPTY_STRING_ARRAY = new String[0];
+    public static final Date[] EMPTY_DATE_ARRAY = new Date[0];
+    public static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
+    public static final short[] EMPTY_SHORT_ARRAY = new short[0];
+    public static final int[] EMPTY_INT_ARRAY = new int[0];
+    public static final long[] EMPTY_LONG_ARRAY = new long[0];
+    public static final float[] EMPTY_FLOAT_ARRAY = new float[0];
+    public static final double[] EMPTY_DOUBLE_ARRAY = new double[0];
     private static Phial instance;
     private final EntityStore entityStore;
     private final ExecutorService executorService;
@@ -53,9 +62,9 @@ public class Phial {
         }
     }
 
-    public void createTable(RecordTableSpec recordTableSpec) {
-        var table = this.entityStore.createTable(recordTableSpec.getClazz());
-        for (var indexSpec : recordTableSpec.getIndexes()) {
+    public void createTable(EntityTableSpec entityTableSpec) {
+        var table = this.entityStore.createTable(entityTableSpec.getClazz());
+        for (var indexSpec : entityTableSpec.getIndexes()) {
             table.createIndex(indexSpec.getRecordComparator(), indexSpec.isUnique());
         }
     }

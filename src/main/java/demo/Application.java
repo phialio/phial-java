@@ -7,6 +7,6 @@ public class Application {
                 .withName("t")
                 .withGender((byte) 0)
                 .withAge((short) 1)
-                .withBook(BookUpdate.newInstance().withId(transaction.getNextBookId())));
+                .withBook(transaction.getNextBookId()));
     }
 }

@@ -2,11 +2,11 @@ package io.phial.specs;
 
 import io.phial.EntityComparator;
 
-public class RecordTableIndexSpec {
+public class EntityTableIndexSpec {
     private final boolean unique;
     private final EntityComparator entityComparator;
 
-    public RecordTableIndexSpec(boolean unique, EntityComparator entityComparator) {
+    public EntityTableIndexSpec(boolean unique, EntityComparator entityComparator) {
         this.unique = unique;
         this.entityComparator = entityComparator;
     }

@@ -1,11 +1,11 @@
 package io.phial;
 
 public abstract class AbstractEntity implements Entity {
-    private long id;
+    protected long id;
 
-    private long revision;
+    protected long revision;
 
-    private Entity nextRevisionEntity;
+    protected Entity nextRevisionEntity;
 
     @Override
     public long getId() {
@@ -38,5 +38,14 @@ public abstract class AbstractEntity implements Entity {
 
     public Entity merge(Entity base) {
         return base;
+    }
+
+    @Override
+    public AbstractEntity clone() {
+        try {
+            return (AbstractEntity) super.clone();
+        } catch (CloneNotSupportedException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

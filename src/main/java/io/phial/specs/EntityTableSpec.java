@@ -1,10 +1,10 @@
 package io.phial.specs;
 
-public class RecordTableSpec {
+public class EntityTableSpec {
     private final Class<?> clazz;
-    private final RecordTableIndexSpec[] indexes;
+    private final EntityTableIndexSpec[] indexes;
 
-    public RecordTableSpec(Class<?> clazz, RecordTableIndexSpec... indexes) {
+    public EntityTableSpec(Class<?> clazz, EntityTableIndexSpec... indexes) {
         this.clazz = clazz;
         this.indexes = indexes;
     }
@@ -13,7 +13,7 @@ public class RecordTableSpec {
         return this.clazz;
     }
 
-    public RecordTableIndexSpec[] getIndexes() {
+    public EntityTableIndexSpec[] getIndexes() {
         return this.indexes;
     }
 }

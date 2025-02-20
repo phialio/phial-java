@@ -104,10 +104,11 @@ public class EntityTable {
             ((AbstractEntity) entity).setRevision(0);
             var id = entity.getId();
             if (id == 0) {
-                ((AbstractEntity) entity).setId(this.nextId.getAndIncrement());
+                entity.setId(this.nextId.getAndIncrement());
             } else {
                 transactionPatch.removedIds.remove(id);
             }
+            entity = entity.clone();
             for (var index : transactionPatch.indexes) {
                 index.put(entity, index == mainIndex, false);
             }
