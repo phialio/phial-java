@@ -1,0 +1,18 @@
+!package demo
+
+Person
+	string personId
+	string name
+	Account[] accounts -> owner
+	index
+	    personId hash unique
+	    name hash
+
+Account
+	string accountId
+	Person owner
+	bool disabled
+	int64 balance
+	date createdAt
+	index
+	    balance
