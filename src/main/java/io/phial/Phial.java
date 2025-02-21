@@ -76,34 +76,19 @@ public class Phial {
     }
 
     void commit(long transactionId) throws InterruptedException {
-        long revision;
-        synchronized (this) {
-            this.committingTransactions.add(transactionId);
-            while (transactionId != this.committingTransactions.get(0)) {
-                this.wait();
-            }
-            revision = this.nextRevision++;
-        }
         var tables = this.entityStore.getAllTables();
         var countDownLatch = new CountDownLatch(tables.size());
-        for (var table : tables) {
-            this.transactionCommitter.commit(countDownLatch, table, transactionId, revision);
+        long revision;
+        synchronized (this) {
+            revision = this.nextRevision++;
+            for (var table : tables) {
+                this.transactionCommitter.commit(countDownLatch, table, transactionId, revision);
+            }
         }
         countDownLatch.await();
         synchronized (this) {
-            this.committingTransactions.remove(0);
-            this.notifyAll();
-        }
-    }
-
-    void closeTransaction(Transaction transaction) {
-        synchronized (this) {
-            this.activeTransactions.remove(transaction);
-            var newRevision = this.activeTransactions.isEmpty()
-                    ? this.nextRevision - 1
-                    : this.activeTransactions.iterator().next().getSnapshotRevision();
-            if (this.revision < newRevision) {
-                this.revision = newRevision;
+            if (this.revision < revision) {
+                this.revision = revision;
                 if (!this.inGarbageCollection) {
                     this.inGarbageCollection = true;
                     this.executorService.submit(this::garbageCollection);

@@ -81,6 +81,5 @@ public class Transaction {
                 table.rollback(this.transactionId);
             }
         }
-        this.phial.closeTransaction(this);
     }
 }

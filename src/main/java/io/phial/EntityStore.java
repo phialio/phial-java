@@ -9,7 +9,7 @@ public class EntityStore {
     private final Map<Class<?>, EntityTable> tables = new ConcurrentHashMap<>();
 
     public EntityTable createTable(Class<?> clazz) {
-        var table = new EntityTable();
+        var table = new EntityTable(clazz.getSimpleName());
         if (this.tables.putIfAbsent(clazz, table) != null) {
             throw new IllegalArgumentException("table " + clazz.getSimpleName() + " exists");
         }

@@ -3,6 +3,8 @@ package io.phial;
 import java.util.stream.Stream;
 
 public interface EntityTableIndex {
+    boolean isUnique();
+
     EntityComparator getEntityComparator();
 
     Entity get(long snapshotRevision, Entity key);

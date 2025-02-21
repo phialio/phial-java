@@ -5,24 +5,33 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class EntityTable {
     private final AtomicLong nextId = new AtomicLong(1);
 
     private final List<EntityTableIndex> indexes = new ArrayList<>();
+    private final String name;
 
     private class TransactionPatch {
-        final List<TransactionEntityTableIndex> indexes = EntityTable.this.indexes.stream()
-                .map(TransactionEntityTableIndex::new)
-                .collect(Collectors.toList());
-        final Map<Long, Object> removedIds = new ConcurrentHashMap<>();
+        final List<TransactionEntityTableIndex> indexes = new ArrayList<>();
+
+        TransactionPatch() {
+            EntityTableIndex mainPatchIndex = null;
+            for (var index : EntityTable.this.indexes) {
+                var transactionEntityTableIndex = new TransactionEntityTableIndex(index, mainPatchIndex);
+                this.indexes.add(transactionEntityTableIndex);
+                if (mainPatchIndex == null) {
+                    mainPatchIndex = transactionEntityTableIndex.getPatch();
+                }
+            }
+        }
     }
 
     private final Map<Long, TransactionPatch> transactionPatches = new ConcurrentHashMap<>();
 
-    public EntityTable() {
+    public EntityTable(String name) {
+        this.name = name;
         var comp = new EntityComparator() {
             @Override
             public String getKeyString(Entity entity) {
@@ -34,7 +43,11 @@ public class EntityTable {
                 return Long.compare(entity1.getId(), entity2.getId());
             }
         };
-        this.indexes.add(new EntityTableIndexImpl(comp));
+        this.indexes.add(new EntityTableIndexImpl(true, comp));
+    }
+
+    public String getName() {
+        return this.name;
     }
 
     public void createIndex(EntityComparator comparator, boolean unique) {
@@ -53,7 +66,7 @@ public class EntityTable {
                 return c;
             }
         };
-        this.indexes.add(new EntityTableIndexImpl(comp));
+        this.indexes.add(new EntityTableIndexImpl(unique, comp));
     }
 
     public long getNextId() {
@@ -68,11 +81,7 @@ public class EntityTable {
         } else {
             index = transactionPatch.indexes.get(indexId - 1);
         }
-        var entity = index.get(snapshotRevision, key);
-        if (transactionPatch != null && transactionPatch.removedIds.containsKey(entity.getId())) {
-            return null;
-        }
-        return entity;
+        return index.get(snapshotRevision, key);
     }
 
     public Stream<Entity> queryByIndex(long transactionId,
@@ -89,12 +98,18 @@ public class EntityTable {
         } else {
             index = transactionPatch.indexes.get(indexId - 1);
         }
-        var stream = index.query(snapshotRevision, from, fromInclusive, to, toInclusive)
-                .filter(entity -> !((AbstractEntity) entity).isNull());
-        if (transactionPatch != null) {
-            return stream.filter(entity -> !transactionPatch.removedIds.containsKey(entity.getId()));
+        if (!index.isUnique()) {
+            if (from != null) {
+                from = ((AbstractEntity) from).clone();
+                ((AbstractEntity) from).setId(fromInclusive ? 0 : Long.MAX_VALUE);
+            }
+            if (to != null) {
+                to = ((AbstractEntity) to).clone();
+                ((AbstractEntity) to).setId(toInclusive ? Long.MAX_VALUE : 0);
+            }
         }
-        return stream;
+        return index.query(snapshotRevision, from, fromInclusive, to, toInclusive)
+                .filter(entity -> !((AbstractEntity) entity).isNull());
     }
 
     public void put(long transactionId, List<EntityUpdate> entities) {
@@ -104,11 +119,9 @@ public class EntityTable {
             ((AbstractEntity) entity).setRevision(0);
             var id = entity.getId();
             if (id == 0) {
-                entity.setId(this.nextId.getAndIncrement());
-            } else {
-                transactionPatch.removedIds.remove(id);
+                ((AbstractEntity) entity).setId(this.nextId.getAndIncrement());
             }
-            entity = entity.clone();
+            entity = (EntityUpdate) ((AbstractEntity) entity).clone();
             for (var index : transactionPatch.indexes) {
                 index.put(entity, index == mainIndex, false);
             }
@@ -120,17 +133,12 @@ public class EntityTable {
         var transactionPatch = this.getTransactionPatch(transactionId, true);
         var mainIndex = transactionPatch.indexes.get(0);
         var nullEntity = new NullEntity();
-        nullEntity.setRevision(Long.MAX_VALUE);
         for (var id : ids) {
-            if (transactionPatch.removedIds.containsKey(id)) {
-                continue;
-            }
             nullEntity.setId(id);
             var entity = mainIndex.get(revision, nullEntity);
             if (entity != null) {
                 ret = true;
                 mainIndex.put(nullEntity, true, false);
-                transactionPatch.removedIds.put(id, 0);
             }
         }
         return ret;
@@ -146,23 +154,20 @@ public class EntityTable {
         var from = new NullEntity();
         var to = new NullEntity();
         to.setId(Long.MAX_VALUE);
-        mainPatchIndex.query(0, from, true, to, true)
-                .forEach(entity -> {
-                    ((AbstractEntity) entity).setRevision(revision);
-                    for (var index : EntityTable.this.indexes) {
-                        if (index == mainIndex) {
-                            entity = index.put(entity, true, true);
-                        } else {
-                            index.put(entity, false, false);
+        try {
+            mainPatchIndex.query(0, from, true, to, true)
+                    .forEach(entity -> {
+                        ((AbstractEntity) entity).setRevision(revision);
+                        for (var index : EntityTable.this.indexes) {
+                            if (index == mainIndex) {
+                                entity = index.put(entity, true, true);
+                            } else if (!((AbstractEntity) entity).isNull()) {
+                                index.put(entity, false, false);
+                            }
                         }
-                    }
-                });
-        for (var entry : transactionPatch.removedIds.entrySet()) {
-            var id = entry.getKey();
-            var entity = new NullEntity();
-            entity.setId(id);
-            entity.setRevision(revision);
-            mainIndex.put(entity, true, false);
+                    });
+        } catch (DuplicatedKeyException e) {
+            throw new DuplicatedKeyException(this.name + " " + e.getMessage());
         }
     }
 

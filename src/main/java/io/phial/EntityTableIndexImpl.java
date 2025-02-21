@@ -10,6 +10,7 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 public class EntityTableIndexImpl implements EntityTableIndex {
+    private final boolean unique;
     protected final EntityComparator entityComparator;
 
     private final static EntityNode ENTITY_NODE_MARKER = new EntityNode();
@@ -33,8 +34,14 @@ public class EntityTableIndexImpl implements EntityTableIndex {
 
     private IndexNode headIndexNode;
 
-    public EntityTableIndexImpl(EntityComparator entityComparator) {
+    public EntityTableIndexImpl(boolean unique, EntityComparator entityComparator) {
+        this.unique = unique;
         this.entityComparator = entityComparator;
+    }
+
+    @Override
+    public boolean isUnique() {
+        return this.unique;
     }
 
     @Override
@@ -65,7 +72,7 @@ public class EntityTableIndexImpl implements EntityTableIndex {
                     if (entityNode != null && entityNode != ENTITY_NODE_MARKER) {
                         var entity = EntityTableIndexImpl.this.getEntitySnapshot(revision, entityNode);
                         if (entity != null) {
-                            var c = EntityTableIndexImpl.this.entityComparator.compare(entity, to);
+                            var c = to == null ? -1 : EntityTableIndexImpl.this.entityComparator.compare(entity, to);
                             if (c < 0 || c == 0 && toInclusive) {
                                 return entity;
                             }
@@ -83,9 +90,9 @@ public class EntityTableIndexImpl implements EntityTableIndex {
 
             @Override
             public Entity next() {
-                var ret = this.next;
+                var result = this.next;
                 this.next = this.getNext();
-                return ret;
+                return result;
             }
         };
         var spliterator = Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED);
@@ -150,6 +157,9 @@ public class EntityTableIndexImpl implements EntityTableIndex {
                         continue;
                     }
                     if (c == 0) {
+                        if (entity.getId() != nextEntity.getId() && nextEntity.nextRevisionEntity == null) {
+                            throw new DuplicatedKeyException(this.entityComparator.getKeyString(entity));
+                        }
                         newEntityNode.next = nextEntityNode;
                         if (!BASE_NODE_ENTITY_NODE.compareAndSet(nextBaseNode, nextEntityNode, newEntityNode)) {
                             // the next base node is removed, retry
@@ -300,7 +310,7 @@ public class EntityTableIndexImpl implements EntityTableIndex {
             var entity = (AbstractEntity) entityNode.entity;
             if (entity != null && entity != ENTITY_MARKER && entity.getRevision() <= revision) {
                 var nextRevisionEntity = (AbstractEntity) entity.getNextRevisionEntity();
-                if (nextRevisionEntity.getRevision() <= revision) {
+                if (nextRevisionEntity != null && nextRevisionEntity.getRevision() <= revision) {
                     return null;
                 }
                 return entity;
@@ -524,6 +534,13 @@ public class EntityTableIndexImpl implements EntityTableIndex {
     private static final int LESS_THAN = 2;
 
     private BaseNode findNearestBaseNode(Entity key, int op) {
+        if (key == null) {
+            var result = this.getFirstBaseNode();
+            if (result == null) {
+                return null;
+            }
+            return result.next;
+        }
         start:
         for (; ; ) {
             var baseNode = findPredecessorByIndex(key);
