@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 public class EntityTable {
@@ -14,15 +16,18 @@ public class EntityTable {
     private final String name;
 
     private class TransactionPatch {
-        final List<TransactionEntityTableIndex> indexes = new ArrayList<>();
+        final List<TransactionEntityTableSkipListIndex> indexes = new ArrayList<>();
 
         TransactionPatch() {
-            EntityTableIndex mainPatchIndex = null;
+            EntityTableSortedIndex mainPatchIndex = null;
             for (var index : EntityTable.this.indexes) {
-                var transactionEntityTableIndex = new TransactionEntityTableIndex(index, mainPatchIndex);
-                this.indexes.add(transactionEntityTableIndex);
-                if (mainPatchIndex == null) {
-                    mainPatchIndex = transactionEntityTableIndex.getPatch();
+                if (index instanceof EntityTableSortedIndex) {
+                    var transactionEntityTableIndex = new TransactionEntityTableSkipListIndex(
+                            (EntityTableSortedIndex) index, mainPatchIndex);
+                    this.indexes.add(transactionEntityTableIndex);
+                    if (mainPatchIndex == null) {
+                        mainPatchIndex = transactionEntityTableIndex.getPatch();
+                    }
                 }
             }
         }
@@ -43,7 +48,7 @@ public class EntityTable {
                 return Long.compare(entity1.getId(), entity2.getId());
             }
         };
-        this.indexes.add(new EntityTableIndexImpl(true, comp));
+        this.indexes.add(new EntityTableSkipListIndex(true, comp));
     }
 
     public String getName() {
@@ -66,7 +71,7 @@ public class EntityTable {
                 return c;
             }
         };
-        this.indexes.add(new EntityTableIndexImpl(unique, comp));
+        this.indexes.add(new EntityTableSkipListIndex(unique, comp));
     }
 
     public long getNextId() {
@@ -92,9 +97,9 @@ public class EntityTable {
                                        Entity to,
                                        boolean toInclusive) {
         var transactionPatch = this.getTransactionPatch(transactionId, false);
-        EntityTableIndex index;
+        EntityTableSortedIndex index;
         if (transactionPatch == null) {
-            index = this.indexes.get(indexId - 1);
+            index = (EntityTableSortedIndex) this.indexes.get(indexId - 1);
         } else {
             index = transactionPatch.indexes.get(indexId - 1);
         }
@@ -145,33 +150,44 @@ public class EntityTable {
     }
 
     public void commit(long transactionId, long revision) {
-        var transactionPatch = this.getTransactionPatch(transactionId, false);
-        if (transactionPatch == null) {
-            return;
-        }
-        var mainIndex = this.indexes.get(0);
-        var mainPatchIndex = transactionPatch.indexes.get(0).getPatch();
-        var from = new NullEntity();
-        var to = new NullEntity();
-        to.setId(Long.MAX_VALUE);
         try {
-            mainPatchIndex.query(0, from, true, to, true)
-                    .forEach(entity -> {
-                        ((AbstractEntity) entity).setRevision(revision);
-                        for (var index : EntityTable.this.indexes) {
-                            if (index == mainIndex) {
-                                entity = index.put(entity, true, true);
-                            } else if (!((AbstractEntity) entity).isNull()) {
-                                index.put(entity, false, false);
-                            }
-                        }
-                    });
+            var entities = new ArrayList<Entity>();
+            // insert the main index at first, make sure modified entities are linked to the current revision
+            this.forEachUpdatedEntity(transactionId, entity -> {
+                ((AbstractEntity) entity).setRevision(revision);
+                var index = EntityTable.this.indexes.get(0);
+                var merged = index.put(entity, true, true);
+                if (!((AbstractEntity) merged).isNull()) { // null entities are not inserted to other indexes
+                    entities.add(merged);
+                }
+            });
+
+            for (var entity : entities) {
+                for (int i = 1; i < EntityTable.this.indexes.size(); ++i) {
+                    var index = EntityTable.this.indexes.get(i);
+                    index.put(entity, false, false);
+                }
+            }
         } catch (DuplicatedKeyException e) {
             throw new DuplicatedKeyException(this.name + " " + e.getMessage());
         }
     }
 
     public void rollback(long transactionId) {
+        this.forEachUpdatedEntity(transactionId, entity -> {
+            if (((AbstractEntity) entity).getRevision() > 0) {
+                for (int i = 0; i < EntityTable.this.indexes.size(); ++i) {
+                    if (i == 0 || !((AbstractEntity) entity).isNull()) {
+                        var index = EntityTable.this.indexes.get(i);
+                        index.remove(entity);
+                    }
+                }
+            }
+        });
+        this.closeTransaction(transactionId);
+    }
+
+    public void closeTransaction(long transactionId) {
         this.transactionPatches.remove(transactionId);
     }
 
@@ -179,6 +195,18 @@ public class EntityTable {
         for (var index : this.indexes) {
             index.garbageCollection(revision);
         }
+    }
+
+    private void forEachUpdatedEntity(long transactionId, Consumer<Entity> consumer) {
+        var transactionPatch = this.getTransactionPatch(transactionId, false);
+        if (transactionPatch == null) {
+            return;
+        }
+        var mainPatchIndex = transactionPatch.indexes.get(0).getPatch();
+        var from = new NullEntity();
+        var to = new NullEntity();
+        to.setId(Long.MAX_VALUE);
+        mainPatchIndex.query(0, from, true, to, true).forEach(consumer);
     }
 
     private TransactionPatch getTransactionPatch(long transactionId, boolean createIfAbsent) {

@@ -3,7 +3,6 @@
 Person
 	string personId
 	string name
-	int64[] accountIds
 	index
 	    personId hash unique
 	    name hash
@@ -13,6 +12,5 @@ Account
 	int64 ownerId
 	bool disabled
 	int64 balance
-	date createdAt
 	index
 	    balance

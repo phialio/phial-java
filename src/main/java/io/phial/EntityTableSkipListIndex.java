@@ -9,9 +9,9 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-public class EntityTableIndexImpl implements EntityTableIndex {
+public class EntityTableSkipListIndex implements EntityTableSortedIndex {
     private final boolean unique;
-    protected final EntityComparator entityComparator;
+    private final EntityComparator entityComparator;
 
     private final static EntityNode ENTITY_NODE_MARKER = new EntityNode();
     private final static Entity ENTITY_MARKER = new NullEntity();
@@ -34,7 +34,7 @@ public class EntityTableIndexImpl implements EntityTableIndex {
 
     private IndexNode headIndexNode;
 
-    public EntityTableIndexImpl(boolean unique, EntityComparator entityComparator) {
+    public EntityTableSkipListIndex(boolean unique, EntityComparator entityComparator) {
         this.unique = unique;
         this.entityComparator = entityComparator;
     }
@@ -62,7 +62,7 @@ public class EntityTableIndexImpl implements EntityTableIndex {
                                 boolean toInclusive) {
         VarHandle.acquireFence();
         var iterator = new Iterator<Entity>() {
-            BaseNode baseNode = EntityTableIndexImpl.this.findNearestBaseNode(from, fromInclusive ? EQUAL : 0);
+            BaseNode baseNode = EntityTableSkipListIndex.this.findNearestBaseNode(from, fromInclusive ? EQUAL : 0);
             Entity next = this.getNext();
 
             Entity getNext() {
@@ -70,9 +70,9 @@ public class EntityTableIndexImpl implements EntityTableIndex {
                     var entityNode = baseNode.entityNode;
                     this.baseNode = this.baseNode.next;
                     if (entityNode != null && entityNode != ENTITY_NODE_MARKER) {
-                        var entity = EntityTableIndexImpl.this.getEntitySnapshot(revision, entityNode);
+                        var entity = EntityTableSkipListIndex.this.getEntitySnapshot(revision, entityNode);
                         if (entity != null) {
-                            var c = to == null ? -1 : EntityTableIndexImpl.this.entityComparator.compare(entity, to);
+                            var c = to == null ? -1 : EntityTableSkipListIndex.this.entityComparator.compare(entity, to);
                             if (c < 0 || c == 0 && toInclusive) {
                                 return entity;
                             }
@@ -146,19 +146,32 @@ public class EntityTableIndexImpl implements EntityTableIndex {
                         continue start;
                     }
                     if (nextEntityNode == null) {
-                        // help unlink the base node so that this thread will not busy wait for deletion by other threads
-                        EntityTableIndexImpl.unlinkBaseNode(baseNode, nextBaseNode);
+                        // help unlink the base node to avoid busy wait
+                        EntityTableSkipListIndex.unlinkBaseNode(baseNode, nextBaseNode);
                         continue;
                     }
                     var nextEntity = (AbstractEntity) nextEntityNode.entity;
+                    if (nextEntity == null) {
+                        // the next entity node is removed, help unlink to avoid busy wait
+                        EntityTableSkipListIndex.unlinkEntityNode(nextBaseNode, nextEntityNode);
+                        continue;
+                    }
                     var c = this.entityComparator.compare(entity, nextEntity);
                     if (c > 0) {
                         baseNode = nextBaseNode;
                         continue;
                     }
                     if (c == 0) {
-                        if (entity.getId() != nextEntity.getId() && nextEntity.nextRevisionEntity == null) {
-                            throw new DuplicatedKeyException(this.entityComparator.getKeyString(entity));
+                        if (entity.getId() != nextEntity.getId()) {
+                            // entity and nextEntity have the same key and different ids
+                            var nextRevisionEntity = (AbstractEntity) nextEntity.nextRevisionEntity;
+                            if (nextRevisionEntity == null
+                                    || nextRevisionEntity.getRevision() <= ((AbstractEntity) entity).getRevision()) {
+                                // check if nextEntity is overwritten by other revisions.
+                                // all modified entities are inserted to the main index before secondary indexes are
+                                // updated, so it is OK to have the equal sign in the condition.
+                                throw new DuplicatedKeyException(this.entityComparator.getKeyString(entity));
+                            }
                         }
                         newEntityNode.next = nextEntityNode;
                         if (!BASE_NODE_ENTITY_NODE.compareAndSet(nextBaseNode, nextEntityNode, newEntityNode)) {
@@ -201,6 +214,86 @@ public class EntityTableIndexImpl implements EntityTableIndex {
     }
 
     @Override
+    public void remove(Entity entity) {
+        VarHandle.acquireFence();
+        start:
+        for (; ; ) {
+            var prevBaseNode = this.findNearestBaseNode(entity, LESS_THAN);
+            if (prevBaseNode == null) {
+                // empty index
+                throw new RuntimeException(
+                        "not found, key=" + this.entityComparator.getKeyString(entity));
+            }
+            for (; ; ) {
+                var currentBaseNode = prevBaseNode.next;
+                if (currentBaseNode == null) {
+                    // not found
+                    throw new RuntimeException(
+                            "not found, key=" + this.entityComparator.getKeyString(entity));
+                }
+                var currentEntityNode = currentBaseNode.entityNode;
+                if (currentEntityNode == null) {
+                    // help unlink
+                    EntityTableSkipListIndex.unlinkBaseNode(prevBaseNode, currentBaseNode);
+                    continue;
+                }
+                if (currentEntityNode == ENTITY_NODE_MARKER) {
+                    // the previous base node is removed, restart from the very beginning
+                    continue start;
+                }
+                var currentEntity = currentEntityNode.entity;
+                if (currentEntity == null) {
+                    // the current base node is removed, retry
+                    continue;
+                }
+                var c = this.entityComparator.compare(entity, currentEntity);
+                if (c == 0) {
+                    EntityNode prevEntityNode = null;
+                    do {
+                        currentEntity = currentEntityNode.entity;
+                        if (currentEntity != null && currentEntity != ENTITY_MARKER) {
+                            var rev1 = ((AbstractEntity) entity).getRevision();
+                            var rev2 = ((AbstractEntity) currentEntity).getRevision();
+                            if (rev1 == rev2) {
+                                // remove the current entity node
+                                if (prevEntityNode == null) {
+                                    // it is the first entity node
+                                    EntityTableSkipListIndex.unlinkEntityNode(currentBaseNode, currentEntityNode);
+                                    if (currentBaseNode.entityNode == null) {
+                                        // all entity nodes are removed, remove the base node
+                                        EntityTableSkipListIndex.unlinkBaseNode(prevBaseNode, currentBaseNode);
+                                        // traverse index to clean up unnecessary index nodes
+                                        this.findPredecessorByIndex(entity);
+                                        this.tryReduceIndexLevel();
+                                    }
+                                } else {
+                                    EntityTableSkipListIndex.unlinkEntityNode(prevEntityNode, currentEntityNode);
+                                }
+                                return;
+                            } else if (rev1 > rev2) {
+                                // not found
+                                throw new RuntimeException(
+                                        "not found, key=" + this.entityComparator.getKeyString(entity));
+                            }
+                        }
+                        prevEntityNode = currentEntityNode;
+                        currentEntityNode = currentEntityNode.next;
+                    } while (currentEntityNode != null);
+                    // not found
+                    throw new RuntimeException(
+                            "not found, key=" + this.entityComparator.getKeyString(entity));
+                }
+                if (c < 0) {
+                    // not found
+                    throw new RuntimeException(
+                            "not found, key=" + this.entityComparator.getKeyString(entity));
+                }
+                prevBaseNode = currentBaseNode;
+            }
+        }
+    }
+
+    @Override
     public void garbageCollection(long revision) {
         var prevBaseNode = this.getFirstBaseNode();
         if (prevBaseNode == null) {
@@ -215,41 +308,41 @@ public class EntityTableIndexImpl implements EntityTableIndex {
             var currentEntityNode = currentBaseNode.entityNode;
             if (currentEntityNode == null) {
                 // help unlink
-                EntityTableIndexImpl.unlinkBaseNode(prevBaseNode, currentBaseNode);
+                EntityTableSkipListIndex.unlinkBaseNode(prevBaseNode, currentBaseNode);
                 continue;
             }
-            if (currentEntityNode == ENTITY_NODE_MARKER) {
-                continue;
-            }
-            EntityNode prevEntityNode = null;
-            do {
-                var entity = (AbstractEntity) currentEntityNode.entity;
-                if (entity.getRevision() <= revision) {
-                    AbstractEntity nextRevisionEntity;
-                    if (entity.isNull()
-                            || (nextRevisionEntity = (AbstractEntity) entity.getNextRevisionEntity()) != null
-                            && nextRevisionEntity.getRevision() <= revision) {
-                        if (prevEntityNode == null) { // the base node can be removed
-                            if (!BASE_NODE_ENTITY_NODE.compareAndSet(currentBaseNode, currentEntityNode, null)) {
-                                // new revisions inserted, retry
-                                continue;
+            if (currentEntityNode != ENTITY_NODE_MARKER) { // ignore marker
+                EntityNode prevEntityNode = null;
+                do {
+                    var entity = (AbstractEntity) currentEntityNode.entity;
+                    if (entity.getRevision() <= revision) {
+                        AbstractEntity nextRevisionEntity;
+                        if (entity.isNull()
+                                || (nextRevisionEntity = (AbstractEntity) entity.getNextRevisionEntity()) != null
+                                && nextRevisionEntity.getRevision() <= revision) {
+                            if (prevEntityNode == null) { // the base node can be removed
+                                if (!BASE_NODE_ENTITY_NODE.compareAndSet(currentBaseNode, currentEntityNode, null)) {
+                                    // new revisions inserted, retry
+                                    continue;
+                                }
+                                EntityTableSkipListIndex.unlinkBaseNode(prevBaseNode, currentBaseNode);
+                                // traverse index to clean up unnecessary index nodes
+                                this.findPredecessorByIndex(entity);
+                                this.tryReduceIndexLevel();
+                                break;
+                            } else {
+                                prevEntityNode.next = null;
                             }
-                            EntityTableIndexImpl.unlinkBaseNode(prevBaseNode, currentBaseNode);
-                            // traverse index to clean up unnecessary index nodes
-                            this.findPredecessorByIndex(entity);
-                            this.tryReduceIndexLevel();
-                            break;
                         } else {
-                            prevEntityNode.next = null;
+                            currentEntityNode.next = null;
                         }
-                    } else {
-                        currentEntityNode.next = null;
+                        break;
                     }
-                    break;
-                }
-                prevEntityNode = currentEntityNode;
-                currentEntityNode = currentEntityNode.next;
-            } while (currentEntityNode != null);
+                    prevEntityNode = currentEntityNode;
+                    currentEntityNode = currentEntityNode.next;
+                } while (currentEntityNode != null);
+            }
+            prevBaseNode = currentBaseNode;
         }
     }
 
@@ -459,45 +552,43 @@ public class EntityTableIndexImpl implements EntityTableIndex {
         BASE_NODE_NEXT.compareAndSet(prev, node, next);
     }
 
-    /*
     private static void unlinkEntityNode(BaseNode baseNode, EntityNode entityNode) {
         EntityNode next;
         for (; ; ) {
             next = entityNode.next;
-            if (next.next != null && next.entity == RECORD_MARKER) {
+            if (next.next != null && next.entity == ENTITY_MARKER) {
                 next = next.next;
                 break;
             } else {
                 var marker = new EntityNode();
-                marker.entity = RECORD_MARKER;
+                marker.entity = ENTITY_MARKER;
                 marker.next = next;
-                if (RECORD_NODE_NEXT.compareAndSet(entityNode, next, marker)) {
+                if (ENTITY_NODE_NEXT.compareAndSet(entityNode, next, marker)) {
                     break;
                 }
             }
         }
-        BASE_NODE_RECORD_NODE.compareAndSet(baseNode, entityNode, next);
+        BASE_NODE_ENTITY_NODE.compareAndSet(baseNode, entityNode, next);
     }
 
-        private static void unlinkEntityNode(EntityNode prev, EntityNode node) {
-            EntityNode next;
-            for (; ; ) {
-                next = node.next;
-                if (next.next != null && next.entity == RECORD_MARKER) {
-                    next = next.next;
+    private static void unlinkEntityNode(EntityNode prev, EntityNode node) {
+        EntityNode next;
+        for (; ; ) {
+            next = node.next;
+            if (next.next != null && next.entity == ENTITY_MARKER) {
+                next = next.next;
+                break;
+            } else {
+                var marker = new EntityNode();
+                marker.entity = ENTITY_MARKER;
+                marker.next = next;
+                if (ENTITY_NODE_NEXT.compareAndSet(node, next, marker)) {
                     break;
-                } else {
-                    var marker = new EntityNode();
-                    marker.entity = RECORD_MARKER;
-                    marker.next = next;
-                    if (RECORD_NODE_NEXT.compareAndSet(node, next, marker)) {
-                        break;
-                    }
                 }
             }
-            RECORD_NODE_NEXT.compareAndSet(prev, node, next);
         }
-    */
+        ENTITY_NODE_NEXT.compareAndSet(prev, node, next);
+    }
 
     private BaseNode findPredecessorByIndex(Entity key) {
         VarHandle.acquireFence();
@@ -558,8 +649,8 @@ public class EntityTableIndexImpl implements EntityTableIndex {
                     continue start;
                 }
                 if (nextEntityNode == null) {
-                    // help unlink the base node so that this thread will not busy wait for deletion by other threads
-                    EntityTableIndexImpl.unlinkBaseNode(baseNode, nextBaseNode);
+                    // help unlink the base node to avoid busy wait
+                    EntityTableSkipListIndex.unlinkBaseNode(baseNode, nextBaseNode);
                     continue;
                 }
                 var c = this.entityComparator.compare(key, nextEntityNode.entity);
@@ -577,14 +668,16 @@ public class EntityTableIndexImpl implements EntityTableIndex {
     private static final VarHandle INDEX_NODE_RIGHT;
     private static final VarHandle BASE_NODE_NEXT;
     private static final VarHandle BASE_NODE_ENTITY_NODE;
+    private static final VarHandle ENTITY_NODE_NEXT;
 
     static {
         try {
             MethodHandles.Lookup lookup = MethodHandles.lookup();
-            HEAD = lookup.findVarHandle(EntityTableIndexImpl.class, "headIndexNode", IndexNode.class);
+            HEAD = lookup.findVarHandle(EntityTableSkipListIndex.class, "headIndexNode", IndexNode.class);
             BASE_NODE_NEXT = lookup.findVarHandle(BaseNode.class, "next", BaseNode.class);
             BASE_NODE_ENTITY_NODE = lookup.findVarHandle(BaseNode.class, "entityNode", EntityNode.class);
             INDEX_NODE_RIGHT = lookup.findVarHandle(IndexNode.class, "right", IndexNode.class);
+            ENTITY_NODE_NEXT = lookup.findVarHandle(EntityNode.class, "next", EntityNode.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }

@@ -6,19 +6,19 @@ import java.util.Spliterators;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-public class TransactionEntityTableIndex implements EntityTableIndex {
+public class TransactionEntityTableSkipListIndex implements EntityTableSortedIndex {
 
-    private final EntityTableIndex base;
-    private final EntityTableIndex patch;
-    private final EntityTableIndex mainPatchIndex;
+    private final EntityTableSortedIndex base;
+    private final EntityTableSortedIndex patch;
+    private final EntityTableSortedIndex mainPatchIndex;
 
-    public TransactionEntityTableIndex(EntityTableIndex base, EntityTableIndex mainPatchIndex) {
+    public TransactionEntityTableSkipListIndex(EntityTableSortedIndex base, EntityTableSortedIndex mainPatchIndex) {
         this.base = base;
-        this.patch = new EntityTableIndexImpl(base.isUnique(), base.getEntityComparator());
+        this.patch = new EntityTableSkipListIndex(base.isUnique(), base.getEntityComparator());
         this.mainPatchIndex = mainPatchIndex;
     }
 
-    public EntityTableIndex getPatch() {
+    public EntityTableSortedIndex getPatch() {
         return this.patch;
     }
 
@@ -70,8 +70,8 @@ public class TransactionEntityTableIndex implements EntityTableIndex {
                                     && (c = comparator.compare(next1, next2)) < 0) {
                         var result = next1;
                         next1 = iterator1.hasNext() ? iterator1.next() : null;
-                        if (TransactionEntityTableIndex.this.mainPatchIndex != null
-                                && TransactionEntityTableIndex.this.mainPatchIndex.get(0, result) != null) {
+                        if (TransactionEntityTableSkipListIndex.this.mainPatchIndex != null
+                                && TransactionEntityTableSkipListIndex.this.mainPatchIndex.get(0, result) != null) {
                             continue;
                         }
                         return result;
@@ -97,6 +97,11 @@ public class TransactionEntityTableIndex implements EntityTableIndex {
             throw new DuplicatedKeyException(this.base.getEntityComparator().getKeyString(entity));
         }
         return this.patch.put(entity, linkEntity, mergeEntity);
+    }
+
+    @Override
+    public void remove(Entity entity) {
+        // meaningless for this class, do nothing
     }
 
     @Override
