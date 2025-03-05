@@ -27,8 +27,8 @@ public class Config {
             return this;
         }
 
-        public Builder setEntityStoreGcIntervalMillis(int entityStoreGcIntervalMillis) {
-            this.config.entityStoreGcIntervalMillis = entityStoreGcIntervalMillis;
+        public Builder setFreedMemoryGcIntervalMillis(int freedMemoryGcIntervalMillis) {
+            this.config.freedMemoryGcIntervalMillis = freedMemoryGcIntervalMillis;
             return this;
         }
 
@@ -85,9 +85,9 @@ public class Config {
     private int maxTaskPoolSize = Runtime.getRuntime().availableProcessors() * 2;
     private int taskPoolKeepAliveSeconds = 60;
     private int commitBatchSize = 100;
-    private int entityStoreGcIntervalMillis = 100;
+    private int freedMemoryGcIntervalMillis = 100;
     private int memoryArenaNumber = Runtime.getRuntime().availableProcessors();
-    private int memoryThreadCacheGcIntervalMillis = 100;
+    private int memoryThreadCacheGcIntervalMillis = 1000;
     private int memoryThreadCacheFlushThreshold = 8192;
     private final Map<Integer, Map.Entry<Integer, Integer>> memoryThreadCacheWatermark = new HashMap<>();
     private double memoryThreadCacheWatermarkDecayRate = 0.75;
@@ -115,7 +115,7 @@ public class Config {
         this.maxTaskPoolSize = config.maxTaskPoolSize;
         this.taskPoolKeepAliveSeconds = config.taskPoolKeepAliveSeconds;
         this.commitBatchSize = config.commitBatchSize;
-        this.entityStoreGcIntervalMillis = config.entityStoreGcIntervalMillis;
+        this.freedMemoryGcIntervalMillis = config.freedMemoryGcIntervalMillis;
         this.memoryArenaNumber = config.memoryArenaNumber;
         this.memoryThreadCacheGcIntervalMillis = config.memoryThreadCacheGcIntervalMillis;
         this.memoryThreadCacheFlushThreshold = config.memoryThreadCacheFlushThreshold;
@@ -144,8 +144,8 @@ public class Config {
         return this.commitBatchSize;
     }
 
-    public int getEntityStoreGcIntervalMillis() {
-        return this.entityStoreGcIntervalMillis;
+    public int getFreedMemoryGcIntervalMillis() {
+        return this.freedMemoryGcIntervalMillis;
     }
 
     public int getMemoryArenaNumber() {

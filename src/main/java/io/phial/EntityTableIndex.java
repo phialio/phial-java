@@ -3,7 +3,7 @@ package io.phial;
 public interface EntityTableIndex {
     boolean isUnique();
 
-    Entity get(long snapshotRevision, Entity key);
+    Entity get(long transactionId, long snapshotRevision, Entity key);
 
     Entity put(Entity entity, boolean linkEntity, boolean mergeEntity);
 

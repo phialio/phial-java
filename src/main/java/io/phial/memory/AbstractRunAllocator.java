@@ -1,14 +1,11 @@
 package io.phial.memory;
 
-import java.util.concurrent.ConcurrentSkipListSet;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.locks.LockSupport;
-
 public abstract class AbstractRunAllocator implements RunAllocator {
+    public static int runAllocate;
     protected final int runSize;
     protected final int watermark;
-    protected final ConcurrentSkipListSet<Long> freeList = new ConcurrentSkipListSet<>();
-    private final SimpleLock lock = new SimpleLock();
+    protected final InternalRedBlackTree freeList = new InternalRedBlackTree();
+    protected final SimpleLock lock = new SimpleLock();
 
     public AbstractRunAllocator(int runSize, int watermark) {
         this.runSize = runSize;
@@ -22,25 +19,22 @@ public abstract class AbstractRunAllocator implements RunAllocator {
 
     @Override
     public long allocate() {
-        for (; ; ) {
+        ++runAllocate;
+        this.lock.lock();
+        try {
             var run = this.freeList.pollFirst();
-            if (run == null) {
-                if (this.lock.tryLock()) {
-                    try {
-                        if (this.freeList.isEmpty()) { // check again
-                            this.populateFreeList(this.watermark);
-                        }
-                    } finally {
-                        this.lock.unlock();
-                    }
-                } else {
-                    LockSupport.parkNanos(ThreadLocalRandom.current().nextInt(100, 200));
+            if (run <= 0) {
+                // empty
+                if (this.freeList.size() != 0) {
+                    throw new Error();
                 }
-                continue;
+                return this.populateFreeListAndReturnOne(this.watermark);
             }
             return run;
+        } finally {
+            this.lock.unlock();
         }
     }
 
-    protected abstract void populateFreeList(int count);
+    protected abstract long populateFreeListAndReturnOne(int count);
 }

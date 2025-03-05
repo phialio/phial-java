@@ -37,7 +37,6 @@ public class Phial {
     private final MemoryArena[] memoryArenas;
     private final AtomicInteger memoryArenaIndex = new AtomicInteger();
     private final ThreadLocal<MemoryArena> localMemoryArena = new ThreadLocal<>();
-    private final FreedMemoryGcManager freedMemoryGcManager;
     private final ExecutorService executorService;
     private final ScheduledExecutorService backgroundExecutorService = Executors.newSingleThreadScheduledExecutor();
     private final TransactionCommitter transactionCommitter;
@@ -60,7 +59,7 @@ public class Phial {
                 TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>());
         this.transactionCommitter = new TransactionCommitter(config, this.executorService);
-        this.freedMemoryGcManager = new FreedMemoryGcManager();
+        var freedMemoryGcManager = new FreedMemoryGcManager();
         this.memoryArenas = new MemoryArena[config.getMemoryArenaNumber()];
         for (int i = 0; i < this.memoryArenas.length; ++i) {
             this.memoryArenas[i] = new MemoryArena(
@@ -70,9 +69,9 @@ public class Phial {
                     new TreeMap<>(config.getMemoryRunFreeListWatermark()));
         }
         this.backgroundExecutorService.scheduleAtFixedRate(
-                this.freedMemoryGcManager::runOnce,
-                10000,
-                config.getEntityStoreGcIntervalMillis(),
+                freedMemoryGcManager::runOnce,
+                0,
+                config.getFreedMemoryGcIntervalMillis(),
                 TimeUnit.MILLISECONDS);
         this.backgroundExecutorService.scheduleAtFixedRate(
                 () -> {
@@ -80,7 +79,7 @@ public class Phial {
                         arena.freeGarbageCollectedThreadCaches();
                     }
                 },
-                10000,
+                0,
                 config.getMemoryThreadCacheGcIntervalMillis(),
                 TimeUnit.MILLISECONDS);
     }

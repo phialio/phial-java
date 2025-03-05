@@ -86,7 +86,7 @@ public class EntityTable {
         } else {
             index = transactionPatch.indexes.get(indexId - 1);
         }
-        return index.get(snapshotRevision, key);
+        return index.get(transactionId, snapshotRevision, key);
     }
 
     public Stream<Entity> queryByIndex(long transactionId,
@@ -113,7 +113,7 @@ public class EntityTable {
                 ((AbstractEntity) to).setId(toInclusive ? Long.MAX_VALUE : 0);
             }
         }
-        return index.query(snapshotRevision, from, fromInclusive, to, toInclusive)
+        return index.query(transactionId, snapshotRevision, from, fromInclusive, to, toInclusive)
                 .filter(entity -> !((AbstractEntity) entity).isNull());
     }
 
@@ -140,7 +140,7 @@ public class EntityTable {
         var nullEntity = new NullEntity();
         for (var id : ids) {
             nullEntity.setId(id);
-            var entity = mainIndex.get(revision, nullEntity);
+            var entity = mainIndex.get(transactionId, revision, nullEntity);
             if (entity != null) {
                 ret = true;
                 mainIndex.put(nullEntity, true, false);
@@ -206,7 +206,7 @@ public class EntityTable {
         var from = new NullEntity();
         var to = new NullEntity();
         to.setId(Long.MAX_VALUE);
-        mainPatchIndex.query(0, from, true, to, true).forEach(consumer);
+        mainPatchIndex.query(transactionId, 0, from, true, to, true).forEach(consumer);
     }
 
     private TransactionPatch getTransactionPatch(long transactionId, boolean createIfAbsent) {

@@ -5,8 +5,6 @@ import io.phial.Phial;
 import java.lang.ref.ReferenceQueue;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.ConcurrentSkipListSet;
-import java.util.concurrent.locks.LockSupport;
 
 public abstract class ThreadCachedSlabAllocator extends AbstractSlabAllocator {
     private static final long ACTIVE_RUN_FIELD_OFFSET;
@@ -29,8 +27,8 @@ public abstract class ThreadCachedSlabAllocator extends AbstractSlabAllocator {
     private final ThreadLocal<ThreadCache> cache = new ThreadLocal<>();
     private final Set<ThreadCacheReference> referenceSet = new HashSet<>();
     private long activeRun;
-    private final ConcurrentSkipListSet<Long> availableRuns = new ConcurrentSkipListSet<>();
-    private final SimpleLock runLock = new SimpleLock();
+    protected final InternalRedBlackTree availableRuns = new InternalRedBlackTree();
+    protected final SimpleLock availableLock = new SimpleLock();
 
     public ThreadCachedSlabAllocator(RunAllocator runAllocator,
                                      SizeClass sizeClass,
@@ -94,45 +92,47 @@ public abstract class ThreadCachedSlabAllocator extends AbstractSlabAllocator {
 
     protected abstract long getRunAddress(long address);
 
-    protected abstract void initRun(long run);
+    protected abstract long initRun(long run);
+
+    protected abstract void tryFreeRun(long run, long bitmap);
 
     private long globalAllocate() {
         for (; ; ) {
-            long activeRun = this.activeRun;
-            long bitmapAddress = this.getBitmapAddress(activeRun);
-            if (activeRun > 0) {
-                long bitmap = Phial.UNSAFE.getLong(bitmapAddress);
-                if (bitmap != 0) {
-                    long firstFreePosition = Long.numberOfLeadingZeros(bitmap);
-                    long mask = ~(1L << (63 - firstFreePosition));
-                    if (Phial.UNSAFE.compareAndSwapLong(null, bitmapAddress, bitmap, bitmap & mask)) {
-                        return activeRun + this.getSlabOffset() + firstFreePosition * this.slabSize;
-                    }
-                    continue;
-                }
+            long run = this.activeRun;
+            long bitmapAddress = this.getBitmapAddress(run);
+            long bitmap = Phial.UNSAFE.getLong(bitmapAddress);
+            if (bitmap == 0) {
+                this.updateActiveRun();
+                continue;
             }
-            var run = this.availableRuns.pollFirst();
-            if (run == null) {
-                // try to allocate a new run
-                if (this.runLock.tryLock()) {
-                    try {
-                        this.initRun(this.runAllocator.allocate());
-                    } finally {
-                        this.runLock.unlock();
-                    }
-                } else {
-                    // spin
-                    LockSupport.parkNanos(100);
-                }
-            } else if (Phial.UNSAFE.compareAndSwapLong(this, ACTIVE_RUN_FIELD_OFFSET, activeRun, run)) {
-                // check again before throw away
-                if (activeRun > 0 && Phial.UNSAFE.getLong(bitmapAddress) != 0) {
-                    this.availableRuns.add(activeRun);
-                }
-            } else {
-                // put it back
-                this.availableRuns.add(run);
+            long firstFreePosition = Long.numberOfLeadingZeros(bitmap);
+            long mask = ~(1L << (63 - firstFreePosition));
+            long newBitmap = bitmap & mask;
+            if (!Phial.UNSAFE.compareAndSwapLong(null, bitmapAddress, bitmap, newBitmap)) {
+                continue;
             }
+            if (newBitmap == 0) {
+                this.updateActiveRun();
+            }
+            return run + this.getSlabOffset() + firstFreePosition * this.slabSize;
+        }
+    }
+
+    private void updateActiveRun() {
+        this.availableLock.lock();
+        long bitmapAddress = this.getBitmapAddress(this.activeRun);
+        try {
+            long bitmap = Phial.UNSAFE.getLong(bitmapAddress);
+            if (bitmap == 0) { // check again before update
+                long nextRun = this.availableRuns.pollFirst();
+                if (nextRun == 0) {
+                    long newRun = this.runAllocator.allocate();
+                    nextRun = this.initRun(newRun);
+                }
+                this.activeRun = nextRun;
+            }
+        } finally {
+            this.availableLock.unlock();
         }
     }
 
@@ -143,12 +143,23 @@ public abstract class ThreadCachedSlabAllocator extends AbstractSlabAllocator {
         for (; ; ) {
             long bitmap = Phial.UNSAFE.getLong(bitmapAddress);
             long newBitmap = bitmap | (1L << (63 - slabIndex));
-            if (Phial.UNSAFE.compareAndSwapLong(null, bitmapAddress, bitmap, newBitmap)) {
-                if (bitmap == 0) {
-                    this.availableRuns.add(run);
-                }
-                return;
+            if (!Phial.UNSAFE.compareAndSwapLong(null, bitmapAddress, bitmap, newBitmap)) {
+                continue;
             }
+            if (bitmap == 0) {
+                this.availableLock.lock();
+                try {
+                    if (run != this.activeRun && Phial.UNSAFE.getLong(bitmapAddress) != 0) { // check again
+                        this.availableRuns.add(run);
+                    }
+                } finally {
+                    this.availableLock.unlock();
+                }
+            } else {
+                this.tryFreeRun(run, newBitmap);
+            }
+            return;
         }
     }
 }
+

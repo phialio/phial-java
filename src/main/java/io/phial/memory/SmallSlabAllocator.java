@@ -39,8 +39,24 @@ public class SmallSlabAllocator extends ThreadCachedSlabAllocator {
     }
 
     @Override
-    protected void initRun(long run) {
+    protected long initRun(long run) {
         Phial.UNSAFE.putLong(run + 8, this.initialBitmap);
+        return run;
     }
 
+    @Override
+    protected void tryFreeRun(long run, long bitmap) {
+        if (bitmap == this.initialBitmap) {
+            this.availableLock.lock();
+            try {
+                if (!this.availableRuns.remove(run)) {
+                    return;
+                }
+            } finally {
+                this.availableLock.unlock();
+            }
+            long chunk = Phial.UNSAFE.getLong(run);
+            this.runAllocator.free(chunk, run);
+        }
+    }
 }

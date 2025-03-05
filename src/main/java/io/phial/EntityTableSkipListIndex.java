@@ -50,12 +50,13 @@ public class EntityTableSkipListIndex implements EntityTableSortedIndex {
     }
 
     @Override
-    public Entity get(long snapshotRevision, Entity key) {
+    public Entity get(long transactionId, long snapshotRevision, Entity key) {
         return this.getEntitySnapshot(snapshotRevision, this.getFirstEntityNode(key));
     }
 
     @Override
-    public Stream<Entity> query(long revision,
+    public Stream<Entity> query(long transactionId,
+                                long revision,
                                 Entity from,
                                 boolean fromInclusive,
                                 Entity to,
@@ -72,7 +73,8 @@ public class EntityTableSkipListIndex implements EntityTableSortedIndex {
                     if (entityNode != null && entityNode != ENTITY_NODE_MARKER) {
                         var entity = EntityTableSkipListIndex.this.getEntitySnapshot(revision, entityNode);
                         if (entity != null) {
-                            var c = to == null ? -1 : EntityTableSkipListIndex.this.entityComparator.compare(entity, to);
+                            var c = to == null ? -1 :
+                                    EntityTableSkipListIndex.this.entityComparator.compare(entity, to);
                             if (c < 0 || c == 0 && toInclusive) {
                                 return entity;
                             }

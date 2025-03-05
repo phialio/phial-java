@@ -98,7 +98,7 @@ public class MemoryArena {
     private static <K, V> V getMappedValue(SortedMap<K, V> map, K key) {
         var tailMap = map.tailMap(key);
         if (tailMap.isEmpty()) {
-            return map.get(tailMap.firstKey());
+            return map.get(map.lastKey());
         }
         return tailMap.get(tailMap.firstKey());
     }

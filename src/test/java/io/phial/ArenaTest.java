@@ -1,40 +1,55 @@
-package demo;
+package io.phial;
 
-import io.phial.Config;
-import io.phial.memory.AbstractRunAllocator;
-import io.phial.memory.LargeSlabAllocator;
 import io.phial.memory.MemoryArena;
-import io.phial.memory.RootRunAllocator;
-import io.phial.memory.SubRunAllocator;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.Random;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
-public class Application {
-    static class Node {
-        long a;
-        long b;
-        long c;
-    }
+public class ArenaTest {
+    private MemoryArena arena;
 
-    public static void main(String[] args) {
+    @BeforeEach
+    public void setUp() {
         var config = Config.newBuilder().build();
-        var arena = new MemoryArena(
+        this.arena = new MemoryArena(
                 config.getMemoryThreadCacheFlushThreshold(),
                 new TreeMap<>(config.getMemoryThreadCacheWatermark()),
                 config.getMemoryThreadCacheWatermarkDecayRate(),
                 new TreeMap<>(config.getMemoryRunFreeListWatermark()));
+
+    }
+
+    @AfterEach
+    public void tearDown() {
+        this.arena.close();
+    }
+
+    @Test
+    public void testSingleThread() {
         var allocated = new ArrayList<Map.Entry<Long, Integer>>();
         var random = new Random();
+        var a = new TreeSet<Long>();
+        for (int i = 0; i < 10000000; ++i) {
+            long v = random.nextLong();
+            a.add(v);
+            a.remove(v);
+        }
+        if (!a.isEmpty()) {
+            return;
+        }
         long sum = 0;
         int count = 0;
         long start = System.currentTimeMillis();
         try {
             for (int i = 0; i < 100000; ++i) {
-                int size = random.nextInt(65536 - 4096) + 4096;
-                long address = arena.allocate(size);
+                int size = random.nextInt(65536) + 1;
+                long address = this.arena.allocate(size);
                 //Phial.UNSAFE.setMemory(address, size, (byte) (size & 0xFF));
                 allocated.add(Map.entry(address, size));
                 sum += size;
@@ -42,8 +57,8 @@ public class Application {
             }
             for (int i = 0; i < 10000000; ++i) {
                 if (random.nextInt(2) == 0) {
-                    int size = random.nextInt(65536 - 4096) + 4096;
-                    long address = arena.allocate(size);
+                    int size = random.nextInt(65536) + 1;
+                    long address = this.arena.allocate(size);
                     //Phial.UNSAFE.setMemory(address, size, (byte) (size & 0xFF));
                     allocated.add(Map.entry(address, size));
                     sum += size;
@@ -51,26 +66,13 @@ public class Application {
                 } else {
                     int index = random.nextInt(allocated.size());
                     var entry = allocated.get(index);
-                    arena.free(entry.getKey(), entry.getValue());
-                    allocated.set(index, allocated.get(allocated.size() - 1));
-                    allocated.remove(allocated.size() - 1);
+                    this.arena.free(entry.getKey(), entry.getValue());
                 }
             }
         } finally {
             long end = System.currentTimeMillis();
             System.out.println((end - start) / 1000.0);
             System.out.println(count + " " + sum);
-            System.out.printf(
-                    "largeAllocate=%d largeFree=%d runAllocate=%d subPopulate=%d subFree=%d rootPopulate=%d rootFree=%d memAllocated=%d memFreed=%d",
-                    LargeSlabAllocator.largeAllocate,
-                    LargeSlabAllocator.largeFree,
-                    AbstractRunAllocator.runAllocate,
-                    SubRunAllocator.subPopulate,
-                    SubRunAllocator.subFree,
-                    RootRunAllocator.rootPopulate,
-                    RootRunAllocator.rootFree,
-                    RootRunAllocator.memAllocated,
-                    RootRunAllocator.memFreed);
         }
     }
 }

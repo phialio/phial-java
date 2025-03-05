@@ -33,22 +33,23 @@ public class TransactionEntityTableSkipListIndex implements EntityTableSortedInd
     }
 
     @Override
-    public Entity get(long snapshotRevision, Entity key) {
-        var entity = this.patch.get(0, key);
+    public Entity get(long transactionId, long snapshotRevision, Entity key) {
+        var entity = this.patch.get(transactionId, 0, key);
         if (entity != null) {
             return entity;
         }
-        entity = this.base.get(snapshotRevision, key);
-        if (this.mainPatchIndex != null && this.mainPatchIndex.get(0, entity) != null) {
+        entity = this.base.get(transactionId, snapshotRevision, key);
+        if (this.mainPatchIndex != null && this.mainPatchIndex.get(transactionId, 0, entity) != null) {
             return null;
         }
         return entity;
     }
 
     @Override
-    public Stream<Entity> query(long revision, Entity from, boolean fromInclusive, Entity to, boolean toInclusive) {
-        var stream1 = this.base.query(revision, from, fromInclusive, to, toInclusive);
-        var stream2 = this.patch.query(revision, from, fromInclusive, to, toInclusive);
+    public Stream<Entity> query(long transactionId, long revision, Entity from, boolean fromInclusive, Entity to,
+                                boolean toInclusive) {
+        var stream1 = this.base.query(transactionId, revision, from, fromInclusive, to, toInclusive);
+        var stream2 = this.patch.query(transactionId, revision, from, fromInclusive, to, toInclusive);
         var iterator1 = stream1.iterator();
         var iterator2 = stream2.iterator();
         var comparator = this.base.getEntityComparator();
@@ -71,7 +72,8 @@ public class TransactionEntityTableSkipListIndex implements EntityTableSortedInd
                         var result = next1;
                         next1 = iterator1.hasNext() ? iterator1.next() : null;
                         if (TransactionEntityTableSkipListIndex.this.mainPatchIndex != null
-                                && TransactionEntityTableSkipListIndex.this.mainPatchIndex.get(0, result) != null) {
+                                && TransactionEntityTableSkipListIndex.this.mainPatchIndex.get(transactionId, 0,
+                                result) != null) {
                             continue;
                         }
                         return result;
@@ -92,7 +94,7 @@ public class TransactionEntityTableSkipListIndex implements EntityTableSortedInd
 
     @Override
     public Entity put(Entity entity, boolean linkEntity, boolean mergeEntity) {
-        var e = this.base.get(Long.MAX_VALUE, entity);
+        var e = this.base.get(0, Long.MAX_VALUE, entity);
         if (e != null && e.getId() != entity.getId()) {
             throw new DuplicatedKeyException(this.base.getEntityComparator().getKeyString(entity));
         }

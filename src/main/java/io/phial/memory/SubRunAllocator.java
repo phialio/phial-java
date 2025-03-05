@@ -3,6 +3,8 @@ package io.phial.memory;
 import io.phial.Phial;
 
 public class SubRunAllocator extends AbstractRunAllocator {
+    public static int subPopulate;
+    public static int subFree;
     private final RunAllocator parent;
 
     public SubRunAllocator(RunAllocator parent, int runSize, int watermark) {
@@ -13,22 +15,34 @@ public class SubRunAllocator extends AbstractRunAllocator {
 
     @Override
     public void free(long chunk, long run) {
+        ++subFree;
         long buddy = chunk + ((run - chunk) ^ this.runSize);
-        if (this.freeList.remove(buddy)) {
-            this.parent.free(chunk, Math.min(run, buddy));
-            return;
+        this.lock.lock();
+        try {
+            if (this.freeList.addOrRemoveBuddy(run, buddy) != -1) {
+                return;
+            }
+        } finally {
+            this.lock.unlock();
         }
-        this.freeList.add(run);
+        this.parent.free(chunk, Math.min(run, buddy));
     }
 
     @Override
-    protected void populateFreeList(int count) {
+    protected long populateFreeListAndReturnOne(int count) {
+        ++subPopulate;
+        long result = 0;
         for (int i = 0; i < count; i += 2) {
             long run = this.parent.allocate();
             long buddy = run + this.runSize;
             Phial.UNSAFE.putLong(buddy, Phial.UNSAFE.getLong(run));
-            this.freeList.add(run);
+            if (i == 0) {
+                result = run;
+            } else {
+                this.freeList.add(run);
+            }
             this.freeList.add(buddy);
         }
+        return result;
     }
 }
